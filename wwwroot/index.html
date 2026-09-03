@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>mp3Identifier</title>
+<style>
+  body { font-family: sans-serif; max-width: 640px; margin: 3rem auto; color: #222; }
+  #drop { border: 2px dashed #888; border-radius: 8px; padding: 3rem; text-align: center; color: #666; }
+  #drop.over { border-color: #333; color: #333; background: #f5f5f5; }
+  table { width: 100%; border-collapse: collapse; margin-top: 1.5rem; }
+  td, th { text-align: left; padding: 0.4rem; border-bottom: 1px solid #ddd; }
+  button { margin-top: 1rem; padding: 0.5rem 1.2rem; }
+  #status { margin-top: 1rem; color: #444; }
+  input[type=text] { width: 100%; box-sizing: border-box; }
+</style>
+</head>
+<body>
+  <h1>mp3Identifier</h1>
+  <div id="drop">
+    Drop an mp3 here, or
+    <button id="browseBtn" type="button">Browse Files</button>
+    <input id="fileInput" type="file" accept=".mp3,audio/mpeg" hidden>
+  </div>
+  <div id="status"></div>
+  <img id="coverArt" style="display:none; max-width:200px; margin-top:1rem; border-radius:4px;">
+  <table id="result" style="display:none">
+    <tr><th></th><th>Current</th><th>Suggested</th></tr>
+    <tr><td>Title</td><td id="curTitle"></td><td><input id="title"></td></tr>
+    <tr><td>Artist</td><td id="curArtist"></td><td><input id="artist"></td></tr>
+    <tr><td>Album</td><td id="curAlbum"></td><td><input id="album"></td></tr>
+    <tr><td>Year</td><td id="curYear"></td><td><input id="year"></td></tr>
+    <tr><td>Genre</td><td></td><td><input id="genre"></td></tr>
+    <tr><td>Track #</td><td></td><td><input id="trackNumber" type="number" style="width:5rem"> of <input id="totalTracks" type="number" style="width:5rem"></td></tr>
+  </table>
+  <button id="apply" style="display:none">Apply and rename</button>
+  <div id="downloadArea" style="display:none; margin-top:1rem;">
+    <a id="downloadLink" href="#">Download tagged file</a>
+  </div>
+
+<script>
+const drop = document.getElementById('drop');
+const browseBtn = document.getElementById('browseBtn');
+const fileInput = document.getElementById('fileInput');
+const statusEl = document.getElementById('status');
+const resultTable = document.getElementById('result');
+const applyBtn = document.getElementById('apply');
+const coverArt = document.getElementById('coverArt');
+const downloadArea = document.getElementById('downloadArea');
+const downloadLink = document.getElementById('downloadLink');
+let currentToken = null;
+let currentReleaseId = null;
+
+['dragover', 'dragenter'].forEach(evt =>
+  drop.addEventListener(evt, e => { e.preventDefault(); drop.classList.add('over'); }));
+['dragleave', 'drop'].forEach(evt =>
+  drop.addEventListener(evt, e => { e.preventDefault(); drop.classList.remove('over'); }));
+
+drop.addEventListener('drop', e => handleFile(e.dataTransfer.files[0]));
+
+browseBtn.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', () => {
+  handleFile(fileInput.files[0]);
+  fileInput.value = ''; // allow re-picking the same file later
+});
+
+async function handleFile(file) {
+  if (!file) return;
+  statusEl.textContent = 'Fingerprinting and looking up...';
+  resultTable.style.display = 'none';
+  applyBtn.style.display = 'none';
+
+  downloadArea.style.display = 'none';
+  coverArt.style.display = 'none';
+
+  const form = new FormData();
+  form.append('file', file);
+
+  const res = await fetch('/api/identify', { method: 'POST', body: form });
+  const data = await res.json();
+
+  if (!res.ok) {
+    statusEl.textContent = 'Error: ' + (data.detail || data.title || res.statusText);
+    return;
+  }
+
+  currentToken = data.token;
+  currentReleaseId = null;
+  document.getElementById('curTitle').textContent = data.currentTags.title ?? '';
+  document.getElementById('curArtist').textContent = data.currentTags.artist ?? '';
+  document.getElementById('curAlbum').textContent = data.currentTags.album ?? '';
+  document.getElementById('curYear').textContent = data.currentTags.year || '';
+
+  if (!data.matched) {
+    statusEl.textContent = 'No AcoustID match found for this file.';
+    for (const id of ['title', 'artist', 'album', 'year', 'genre', 'trackNumber', 'totalTracks']) {
+      document.getElementById(id).value = '';
+    }
+  } else {
+    statusEl.textContent = `Match found (confidence ${(data.score * 100).toFixed(0)}%)`;
+    document.getElementById('title').value = data.suggested.title ?? '';
+    document.getElementById('artist').value = data.suggested.artist ?? '';
+    document.getElementById('album').value = data.suggested.album ?? '';
+    document.getElementById('year').value = data.suggested.year ?? '';
+    document.getElementById('genre').value = data.suggested.genre ?? '';
+    document.getElementById('trackNumber').value = data.suggested.trackNumber ?? '';
+    document.getElementById('totalTracks').value = data.suggested.totalTracks ?? '';
+    currentReleaseId = data.suggested.releaseId ?? null;
+
+    if (data.suggested.coverArtUrl) {
+      coverArt.src = data.suggested.coverArtUrl;
+      coverArt.style.display = 'block';
+      coverArt.onerror = () => { coverArt.style.display = 'none'; }; // no cover art for this release, fine
+    }
+  }
+
+  resultTable.style.display = 'table';
+  applyBtn.style.display = 'inline-block';
+}
+
+applyBtn.addEventListener('click', async () => {
+  const body = {
+    token: currentToken,
+    title: document.getElementById('title').value,
+    artist: document.getElementById('artist').value,
+    album: document.getElementById('album').value,
+    year: document.getElementById('year').value,
+    genre: document.getElementById('genre').value,
+    trackNumber: document.getElementById('trackNumber').value ? Number(document.getElementById('trackNumber').value) : null,
+    totalTracks: document.getElementById('totalTracks').value ? Number(document.getElementById('totalTracks').value) : null,
+    releaseId: currentReleaseId
+  };
+  const res = await fetch('/api/apply', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  const data = await res.json();
+  if (res.ok) {
+    statusEl.textContent = `Saved: ${data.finalPath} (backup: ${data.backupPath})`;
+    downloadLink.href = `/api/download/${encodeURIComponent(data.fileName)}`;
+    downloadLink.textContent = `Download "${data.fileName}"`;
+    downloadArea.style.display = 'block';
+  } else {
+    statusEl.textContent = 'Error applying tags: ' + (data.detail || res.statusText);
+  }
+});
+</script>
+</body>
+</html>
